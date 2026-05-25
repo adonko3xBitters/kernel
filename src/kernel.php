@@ -124,14 +124,40 @@ interface Effect {
     public function execute(EffectContext $context, ?Reference $subject, array $inputs): array;
 }
 
+/**
+ * Built-in effect identifiers.
+ *
+ * An {@see ActionNode}'s `effectClass` is overloaded: it carries **either** a
+ * PHP class FQN that implements {@see Effect}, **or** a sentinel naming one of
+ * the kernel's built-in effects (`Create`, `Transition`). This enum names the
+ * sentinel values so DSL writers and effect dispatchers do not pass raw strings
+ * around. The underlying string values are stable and form the public wire
+ * format of `ActionNode::effectClass`.
+ */
+enum BuiltinEffect: string {
+    case Create     = 'kernel.builtin.create';
+    case Transition = 'kernel.builtin.transition';
+    case Update     = 'kernel.builtin.update';
+}
+
 // =============================================================================
 // PERSISTENCE CONTRACTS (subset of RFC-002)
 // =============================================================================
 
+/**
+ * Per-entity, per-tenant CRUD-shaped contract.
+ *
+ * `findAll()` was added in v0.1.1 so the projection renderer can enumerate
+ * entities through the repository contract instead of reaching into the SQLite
+ * PDO via reflection. This is a documented contract addition — any custom
+ * `Repository` implementation must add it.
+ */
 interface Repository {
     public function find(Reference $ref): ?Entity;
     /** @param array<string,mixed> $payload */ public function create(array $payload, ?string $identity = null): Entity;
     /** @param array<string,mixed> $patch */ public function update(Reference $ref, array $patch, Version $expected): Entity;
+    /** List all entities of this kind in the active tenant, ordered by id. @return list<Entity> */
+    public function findAll(): array;
 }
 
 final readonly class Entity {
@@ -201,6 +227,15 @@ interface Auditor {
 // =============================================================================
 
 final readonly class FieldNode {
+    /**
+     * @param ?string $label  Human-friendly label for this field. When null
+     *                        (the v0.1.x default for fields built without
+     *                        `FieldBuilder::label(...)`), the
+     *                        ProjectionRenderer auto-humanizes the name
+     *                        (`project_id` → "Project id"). Additive; placed
+     *                        last so existing positional callers — including
+     *                        the manual HelloInvoicePlugin — keep compiling.
+     */
     public function __construct(
         public string $name,
         public string $type,              // 'string'|'integer'|'enum'|'money'|'datetime'|'identity'|'version'|'system_string'
@@ -208,6 +243,7 @@ final readonly class FieldNode {
         public bool $nullable,
         /** @var array<string,mixed> */ public array $typeOptions,
         public mixed $default,
+        public ?string $label = null,
     ) {}
 }
 
@@ -344,6 +380,9 @@ final class Compiler {
             if ($entity->field($w->stateField) === null) {
                 throw new \RuntimeException("WorkflowCoherence: workflow {$w->fqn} state field '{$w->stateField}' not on entity {$w->ownerEntityFqn}");
             }
+            if (!in_array($w->initial, $w->states, true)) {
+                throw new \RuntimeException("WorkflowCoherence: workflow {$w->fqn} initial state '{$w->initial}' not in declared states [" . implode(',', $w->states) . "]");
+            }
             foreach ($w->transitions as $t) {
                 if ($t->source !== '*' && !in_array($t->source, $w->states, true)) {
                     throw new \RuntimeException("WorkflowCoherence: transition source '{$t->source}' not in states");
@@ -406,6 +445,44 @@ final class Ulid {
             $out .= self::ALPHABET[(int) bindec($chunk)];
         }
         return $out;
+    }
+}
+
+// =============================================================================
+// INVOCATION RESULT  (typed wrapper around the loose Invoker output array)
+// =============================================================================
+
+/**
+ * Typed outcome of an invocation.
+ *
+ * `Invoker::invoke()` returns `array<string,mixed>` (the raw effect outputs) —
+ * useful but loosely typed. `InvocationResult` wraps that array together with
+ * the post-action {@see Reference} (the new subject for a `create`, the input
+ * subject for a transition) so callers get an IDE-discoverable surface.
+ *
+ * Produced by {@see \Ausus\Application::run()}. The underlying `outputs` array
+ * is still available for callers that need it.
+ */
+final readonly class InvocationResult
+{
+    /** @param array<string,mixed> $outputs effect outputs, as returned by the runtime */
+    public function __construct(
+        public string $actionFqn,
+        public ?Reference $subject,
+        public array $outputs,
+    ) {}
+
+    /** The identity of the affected entity, when one exists. */
+    public function id(): ?string
+    {
+        $id = $this->subject?->identityHandle ?? ($this->outputs['id'] ?? null);
+        return $id === null ? null : (string) $id;
+    }
+
+    /** Read a single output value by key, or null if absent. */
+    public function output(string $key): mixed
+    {
+        return $this->outputs[$key] ?? null;
     }
 }
 

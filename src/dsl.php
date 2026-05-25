@@ -108,6 +108,7 @@ final class FieldBuilder
     /** @var array<string, mixed> */
     private array $typeOptions       = [];
     private bool  $uniqueWithinTenant = false;
+    private ?string $label           = null;
 
     public function __construct(public readonly string $type) {}
 
@@ -122,6 +123,28 @@ final class FieldBuilder
     /** enum options */
     public function options(array $opts): self      { $this->typeOptions['options']  = array_values($opts); return $this; }
 
+    /**
+     * Explicit human-friendly label for this field.
+     *
+     * Used by the renderer for table headers, detail-view `<dt>` labels and
+     * form-field labels. When unset, the runtime auto-humanises the field
+     * name (`project_id` → `Project id`); calling `->label('Project')` makes
+     * that header read "Project" instead.
+     *
+     * Strictly cosmetic — the field name remains the source of truth for
+     * persistence, projection lookups and action input keys.
+     */
+    public function label(string $label): self
+    {
+        if ($label === '') {
+            throw new \InvalidArgumentException(
+                "FieldBuilder::label(): label must be a non-empty string."
+            );
+        }
+        $this->label = $label;
+        return $this;
+    }
+
     public function buildField(string $name, bool $system = false): FieldNode
     {
         return new FieldNode(
@@ -131,6 +154,7 @@ final class FieldBuilder
             nullable: $this->nullable,
             typeOptions: $this->typeOptions,
             default: $this->default,
+            label: $this->label,
         );
     }
 }
@@ -141,11 +165,12 @@ final class FieldBuilder
 
 final class ActionBuilder
 {
-    public string $kind = 'standard';   // 'create' | 'transition'
+    public string $kind = 'standard';   // 'create' | 'transition' | 'update'
     /** @var string[] */ public array $createInputs = [];
     /** @var array<int, array{field:string, from:string, to:string}> */
     public array $transitions = [];
     /** @var string[] */ public array $stamps = [];
+    /** @var string[] */ public array $updateFieldNames = [];
     public ?string $requiredRole = null;
 
     public static function create(string ...$inputs): self
@@ -164,23 +189,79 @@ final class ActionBuilder
         return $b;
     }
 
-    /** chained additional transition (multi-transition Actions per amended RFC-006 §4.2).
-     *  PHP forbids same-class static+instance methods sharing a name, so the
-     *  instance form is `andTransition()`. RFC-011 §8.2 example uses wildcards
-     *  (`from: '*'`) for "cancel from any state"; this helper is the explicit
-     *  multi-source alternative when wildcards conflict with explicit sources. */
-    public function andTransition(string $field, string $from, string $to): self
+    /**
+     * Build an `update` action — partial-patch on a fixed list of fields.
+     *
+     * Each named field must exist on the entity, must not be a system field
+     * (`id`, `tenant_id`, `_version`, `created_at`, `updated_at`) and must
+     * **not** be the workflow state field (when one is declared). State moves
+     * keep flowing exclusively through {@see transition()}. Compile-time
+     * validation is performed in {@see build()} once the entity field
+     * resolution is available.
+     *
+     * See ADR-0002 — `docs/adr/0002-update-actions.md`.
+     */
+    public static function update(string ...$fieldNames): self
+    {
+        if ($fieldNames === []) {
+            throw new \RuntimeException(
+                "Action::update() requires at least one field name to be patchable."
+            );
+        }
+        $b = new self();
+        $b->kind = 'update';
+        $b->updateFieldNames = array_values($fieldNames);
+        return $b;
+    }
+
+    /**
+     * Append an additional transition to this action.
+     *
+     * `Action::transition()` is a **static** constructor — it creates a fresh
+     * `ActionBuilder` — so PHP forbids a same-named instance method that would
+     * extend it. `addTransition()` is the canonical chained form for declaring
+     * a multi-source / multi-target action:
+     *
+     * ```php
+     * Action::transition('status', from: 'DRAFT',  to: 'CANCELLED')
+     *     ->addTransition('status', from: 'ISSUED', to: 'CANCELLED');
+     * ```
+     */
+    public function addTransition(string $field, string $from, string $to): self
     {
         $this->transitions[] = ['field' => $field, 'from' => $from, 'to' => $to];
         return $this;
     }
 
+    /**
+     * @deprecated Prefer {@see addTransition()} — same behaviour, consistent
+     *             `add*` naming. `andTransition()` will remain through v0.1.x
+     *             for backward compatibility.
+     */
+    public function andTransition(string $field, string $from, string $to): self
+    {
+        return $this->addTransition($field, $from, $to);
+    }
+
     public function stamp(string $field): self       { $this->stamps[] = $field; return $this; }
     public function requireRole(string $role): self  { $this->requiredRole = $role; return $this; }
 
-    /** @return array{0:ActionNode, 1:PolicyNode[]} */
-    public function build(string $entityFqn, string $actionFqn, string $localName, array $entityFields): array
-    {
+    /**
+     * @param array<int,FieldNode> $entityFields all entity fields (system + user)
+     * @param ?string $createStateField workflow state field a `create` effect seeds,
+     *                                  resolved by {@see EntityBuilder} — null when the
+     *                                  entity has no Workflow.
+     * @param ?string $createInitial    initial state value the `create` effect writes.
+     * @return array{0:ActionNode, 1:PolicyNode[]}
+     */
+    public function build(
+        string $entityFqn,
+        string $actionFqn,
+        string $localName,
+        array $entityFields,
+        ?string $createStateField = null,
+        ?string $createInitial = null,
+    ): array {
         $policyFqn = "{$entityFqn}.policy.{$localName}";
         $policy = new PolicyNode(
             $policyFqn,
@@ -200,23 +281,62 @@ final class ActionBuilder
                 }
                 $inputs[] = $found;
             }
-            // Infer initial Workflow state from any enum field with default
-            $stateField = null; $initial = null;
-            foreach ($entityFields as $f) {
-                if ($f->type === 'enum' && $f->default !== null) {
-                    $stateField = $f->name; $initial = $f->default; break;
-                }
-            }
+            // The initial Workflow state is resolved by EntityBuilder from the
+            // explicit ->workflow() declaration (or legacy inference); the
+            // ActionBuilder no longer scans fields for it.
             return [new ActionNode(
                 fqn: $actionFqn,
                 entityFqn: $entityFqn,
                 policyFqn: $policyFqn,
                 subjectRequired: false,
-                effectClass: 'kernel.builtin.create',
+                effectClass: BuiltinEffect::Create->value,
                 effectConfig: [
                     'entityFqn'          => $entityFqn,
-                    'workflowStateField' => $stateField,
-                    'workflowInitial'    => $initial,
+                    'workflowStateField' => $createStateField,
+                    'workflowInitial'    => $createInitial,
+                ],
+                inputs: $inputs,
+                kind: 'standard',
+            ), [$policy]];
+        }
+
+        if ($this->kind === 'update') {
+            $inputs = [];
+            $meta = [];
+            foreach ($this->updateFieldNames as $name) {
+                $found = null;
+                foreach ($entityFields as $ef) {
+                    if ($ef->name === $name) { $found = $ef; break; }
+                }
+                if ($found === null) {
+                    throw new \RuntimeException(
+                        "Action::update('{$name}') refers to a field that is not declared on entity '{$entityFqn}'."
+                    );
+                }
+                if ($found->system) {
+                    throw new \RuntimeException(
+                        "Action::update('{$name}') cannot patch a system field on entity '{$entityFqn}' — "
+                        . "system fields (id / tenant_id / _version / created_at / updated_at) are runtime-managed."
+                    );
+                }
+                if ($createStateField !== null && $name === $createStateField) {
+                    throw new \RuntimeException(
+                        "Action::update('{$name}') cannot patch the workflow state field on entity '{$entityFqn}' — "
+                        . "state moves go through Action::transition(...). See ADR-0002 §7."
+                    );
+                }
+                $inputs[] = $found;
+                $meta[] = ['name' => $found->name, 'type' => $found->type, 'nullable' => $found->nullable];
+            }
+            return [new ActionNode(
+                fqn: $actionFqn,
+                entityFqn: $entityFqn,
+                policyFqn: $policyFqn,
+                subjectRequired: true,
+                effectClass: BuiltinEffect::Update->value,
+                effectConfig: [
+                    'entityFqn'       => $entityFqn,
+                    'updatableFields' => $meta,
                 ],
                 inputs: $inputs,
                 kind: 'standard',
@@ -230,7 +350,7 @@ final class ActionBuilder
                 entityFqn: $entityFqn,
                 policyFqn: $policyFqn,
                 subjectRequired: true,
-                effectClass: 'kernel.builtin.transition',
+                effectClass: BuiltinEffect::Transition->value,
                 effectConfig: [
                     'entityFqn'  => $entityFqn,
                     'stateField' => $first['field'],
@@ -256,7 +376,9 @@ final class EntityBuilder
     private array $fieldBuilders = [];
     /** @var array<string, ActionBuilder> */
     private array $actionBuilders = [];
-    private ?string $workflowField = null;
+    private ?string $workflowField   = null;
+    private ?string $workflowInitial = null;
+    private bool    $workflowDeclared = false;
     /** @var array<string, array{fields:array, actions:array, role:?string, policyFqn:?string}> */
     private array $projectionsConfig = [];
     private bool $finalized = false;
@@ -280,10 +402,26 @@ final class EntityBuilder
         return $this;
     }
 
-    /** Declare the enum field whose values drive Workflow state inference (RFC-011 §6.4). */
-    public function workflow(string $fieldName): self
+    /**
+     * Declare the Workflow for this entity, explicitly.
+     *
+     * ```php
+     * $dsl->entity('invoice')
+     *     ->fields([...])
+     *     ->workflow(field: 'status', initial: 'DRAFT');
+     * ```
+     *
+     * @param string  $field   the enum field whose values are the workflow states.
+     * @param ?string $initial the state a freshly created entity starts in. When
+     *                         omitted, it is inferred from the field default —
+     *                         this is **deprecated** and emits an `E_USER_DEPRECATED`
+     *                         notice. Always pass `initial` explicitly.
+     */
+    public function workflow(string $field, ?string $initial = null): self
     {
-        $this->workflowField = $fieldName;
+        $this->workflowField    = $field;
+        $this->workflowInitial  = $initial;
+        $this->workflowDeclared = true;
         return $this;
     }
 
@@ -317,51 +455,53 @@ final class EntityBuilder
         }
         $allFields = array_merge($systemFields, $userFields);
 
+        // Resolve the Workflow declaration first — the runtime prefers the
+        // explicit ->workflow() metadata over any field-order inference.
+        $workflow = $this->resolveWorkflow($userFields);
+
+        // The `create` effect seeds the initial state. Prefer the resolved
+        // Workflow; fall back to legacy per-entity inference only when no
+        // Workflow was declared at all.
+        if ($workflow !== null) {
+            $createStateField = $workflow['field']->name;
+            $createInitial    = $workflow['initial'];
+        } else {
+            [$createStateField, $createInitial] = $this->inferCreateState($userFields);
+        }
+
         // Build actions + per-action policies
         $actionFqns = [];
         $localToFqn = [];
         foreach ($this->actionBuilders as $localName => $ab) {
             $afqn = "{$this->fqn}.{$localName}";
-            [$action, $policies] = $ab->build($this->fqn, $afqn, $localName, $allFields);
+            [$action, $policies] = $ab->build(
+                $this->fqn, $afqn, $localName, $allFields, $createStateField, $createInitial,
+            );
             $this->dsl->_registerAction($action);
             foreach ($policies as $p) $this->dsl->_registerPolicy($p);
             $actionFqns[] = $afqn;
             $localToFqn[$localName] = $afqn;
         }
 
-        // Workflow inference (RFC-011 §6.4)
+        // Register the Workflow node (only when one was declared).
         $workflowFqns = [];
-        if ($this->workflowField !== null) {
-            $stateField = null;
-            foreach ($userFields as $f) {
-                if ($f->name === $this->workflowField) { $stateField = $f; break; }
-            }
-            if ($stateField === null) {
-                throw new \RuntimeException("workflow('{$this->workflowField}') refers to unknown field on {$this->fqn}");
-            }
-            if ($stateField->type !== 'enum') {
-                throw new \RuntimeException("workflow('{$this->workflowField}') field must be enum, got '{$stateField->type}'");
-            }
-            $states  = $stateField->typeOptions['options'];
-            $initial = $stateField->default ?? $states[0];
-
+        if ($workflow !== null) {
             $transitions = [];
             foreach ($this->actionBuilders as $localName => $ab) {
                 $afqn = "{$this->fqn}.{$localName}";
                 foreach ($ab->transitions as $t) {
-                    if ($t['field'] === $this->workflowField) {
+                    if ($t['field'] === $workflow['field']->name) {
                         $transitions[] = new TransitionNode($t['from'], $t['to'], $afqn);
                     }
                 }
             }
-
             $wfqn = "{$this->fqn}.lifecycle";
             $this->dsl->_registerWorkflow(new WorkflowNode(
                 fqn: $wfqn,
                 ownerEntityFqn: $this->fqn,
-                stateField: $this->workflowField,
-                states: $states,
-                initial: $initial,
+                stateField: $workflow['field']->name,
+                states: $workflow['states'],
+                initial: $workflow['initial'],
                 transitions: $transitions,
             ));
             $workflowFqns[] = $wfqn;
@@ -405,6 +545,113 @@ final class EntityBuilder
             workflowFqns: $workflowFqns,
         ));
     }
+
+    /**
+     * Resolve an explicit ->workflow() declaration into its state field, the
+     * full set of states, and the validated initial state.
+     *
+     * Returns null when ->workflow() was not called on this entity (the entity
+     * has no Workflow). Throws a validation error for an unknown field, a
+     * non-enum field, an enum with no states, or an out-of-range initial state.
+     *
+     * @param array<int,FieldNode> $userFields
+     * @return array{field:FieldNode, states:list<string>, initial:string}|null
+     */
+    private function resolveWorkflow(array $userFields): ?array
+    {
+        if (!$this->workflowDeclared) {
+            return null;
+        }
+
+        $field = null;
+        foreach ($userFields as $f) {
+            if ($f->name === $this->workflowField) { $field = $f; break; }
+        }
+        if ($field === null) {
+            $declared = implode(', ', array_map(fn(FieldNode $f) => $f->name, $userFields));
+            throw new \RuntimeException(
+                "WorkflowFieldNotFound: workflow(field: '{$this->workflowField}') on entity "
+                . "'{$this->fqn}' refers to a field that is not declared. Declared fields: [{$declared}]."
+            );
+        }
+        if ($field->type !== 'enum') {
+            throw new \RuntimeException(
+                "WorkflowFieldNotEnum: workflow field '{$this->workflowField}' on entity "
+                . "'{$this->fqn}' must be an enum field, but it is of type '{$field->type}'."
+            );
+        }
+
+        /** @var list<string> $states */
+        $states = array_values($field->typeOptions['options'] ?? []);
+        if ($states === []) {
+            throw new \RuntimeException(
+                "WorkflowFieldNoStates: enum field '{$this->workflowField}' on entity "
+                . "'{$this->fqn}' declares no states."
+            );
+        }
+
+        $initial = $this->workflowInitial;
+        if ($initial === null) {
+            // Backward-compatible fallback: infer the initial state from the
+            // field default. Deprecated — the initial state should be explicit.
+            $initial = $field->default ?? $states[0];
+            trigger_error(
+                "AUSUS deprecation: entity '{$this->fqn}' calls workflow('{$this->workflowField}') "
+                . "without an explicit initial state; it was inferred as '{$initial}'. Declare it "
+                . "explicitly: ->workflow(field: '{$this->workflowField}', initial: '{$initial}'). "
+                . 'Implicit inference will be removed in a future release.',
+                E_USER_DEPRECATED,
+            );
+        }
+        if (!in_array($initial, $states, true)) {
+            throw new \RuntimeException(
+                "WorkflowInitialInvalid: initial state '{$initial}' for entity '{$this->fqn}' is not "
+                . "one of the '{$this->workflowField}' enum states [" . implode(', ', $states) . '].'
+            );
+        }
+
+        return ['field' => $field, 'states' => $states, 'initial' => $initial];
+    }
+
+    /**
+     * Legacy implicit workflow-state inference: pick the single enum field that
+     * carries a default. Runs only when ->workflow() was NOT called, and is
+     * preserved purely for backward compatibility.
+     *
+     *  - 0 candidate fields → [null, null] (the entity simply has no Workflow).
+     *  - 1 candidate        → used, with an E_USER_DEPRECATED notice.
+     *  - 2+ candidates      → AmbiguousWorkflowField validation error.
+     *
+     * @param array<int,FieldNode> $userFields
+     * @return array{0:?string, 1:?string} [stateField, initial]
+     */
+    private function inferCreateState(array $userFields): array
+    {
+        $candidates = array_values(array_filter(
+            $userFields,
+            fn(FieldNode $f) => $f->type === 'enum' && $f->default !== null,
+        ));
+        if ($candidates === []) {
+            return [null, null];
+        }
+        if (count($candidates) > 1) {
+            $names = implode(', ', array_map(fn(FieldNode $f) => $f->name, $candidates));
+            throw new \RuntimeException(
+                "AmbiguousWorkflowField: entity '{$this->fqn}' has multiple enum fields with a default "
+                . "({$names}); the workflow state field cannot be inferred. Declare it explicitly: "
+                . "->workflow(field: '<field>', initial: '<state>')."
+            );
+        }
+        $field = $candidates[0];
+        trigger_error(
+            "AUSUS deprecation: entity '{$this->fqn}' relies on implicit workflow-state inference "
+            . "(enum field '{$field->name}' with a default). Declare the workflow explicitly: "
+            . "->workflow(field: '{$field->name}', initial: '{$field->default}'). "
+            . 'Implicit inference will be removed in a future release.',
+            E_USER_DEPRECATED,
+        );
+        return [$field->name, $field->default];
+    }
 }
 
 // =============================================================================
@@ -432,5 +679,14 @@ final class Action
     public static function transition(string $field, string $from, string $to): ActionBuilder
     {
         return ActionBuilder::transition($field, $from, $to);
+    }
+
+    /**
+     * Partial-PATCH update action over a fixed list of patchable fields.
+     * See ADR-0002 — `docs/adr/0002-update-actions.md`.
+     */
+    public static function update(string ...$fieldNames): ActionBuilder
+    {
+        return ActionBuilder::update(...$fieldNames);
     }
 }
