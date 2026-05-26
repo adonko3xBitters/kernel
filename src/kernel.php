@@ -140,6 +140,36 @@ enum BuiltinEffect: string {
     case Update     = 'kernel.builtin.update';
 }
 
+/**
+ * Public contract for {@see ActionNode::$effectClass} (v0.1.x).
+ *
+ * The string in `$effectClass` is one of exactly two shapes — the runtime's
+ * {@see EffectDispatcher} distinguishes them by exact string match, in this order:
+ *
+ * 1. **Built-in sentinel** — equal to one of the `BuiltinEffect::*->value`
+ *    strings (`'kernel.builtin.create'`, `'kernel.builtin.transition'`,
+ *    `'kernel.builtin.update'`). The dispatcher routes to the matching
+ *    runtime-shipped effect; `effectConfig` carries kind-specific configuration
+ *    (e.g. `createStateField`, `createInitial`, `updatableFields`). The DSL
+ *    produces these via {@see Action::create()}, {@see Action::transition()},
+ *    {@see Action::update()}.
+ *
+ * 2. **Custom effect FQN** — any other string is treated as a fully-qualified
+ *    PHP class name. The class MUST implement {@see Effect} and MUST be
+ *    instantiable with **no constructor arguments** — the dispatcher
+ *    `new`s it lazily per invocation. `effectConfig` is *not* passed to the
+ *    constructor; custom effects receive their inputs through
+ *    {@see Effect::execute()} and read configuration from elsewhere (closure,
+ *    service locator, environment). v0.1.x does **not** define a registration
+ *    hook for constructor injection.
+ *
+ * The two shapes share a single field deliberately — `effectClass` is the
+ * canonical address of "which effect runs", and the dispatcher's first job
+ * is to disambiguate the sentinel set from the custom FQN set. The string
+ * values of the sentinels are stable wire metadata; renaming or moving them
+ * is a public-API break.
+ */
+
 // =============================================================================
 // PERSISTENCE CONTRACTS (subset of RFC-002)
 // =============================================================================
@@ -275,15 +305,29 @@ final readonly class PolicyNode {
 }
 
 final readonly class ActionNode {
+    /**
+     * @param string $effectClass
+     *     One of two shapes (see the docblock above {@see BuiltinEffect}):
+     *     a {@see BuiltinEffect} sentinel value (`kernel.builtin.create`,
+     *     `kernel.builtin.transition`, `kernel.builtin.update`), **or** a
+     *     custom FQN whose class implements {@see Effect} and has a no-arg
+     *     constructor. The runtime {@see EffectDispatcher} disambiguates by
+     *     exact string match against the sentinel set.
+     * @param array<string,mixed> $effectConfig
+     *     Built-in-effect configuration consumed by the dispatcher, not by
+     *     the effect class' constructor. Empty for custom-FQN effects.
+     * @param FieldNode[] $inputs
+     * @param string $kind  `'standard'` | `'maintenance'`.
+     */
     public function __construct(
         public string $fqn,
         public string $entityFqn,
         public string $policyFqn,
         public bool $subjectRequired,
-        public string $effectClass,                       // FQN or builtin marker
-        /** @var array<string,mixed> */ public array $effectConfig,  // for builtin Effects
-        /** @var FieldNode[] */ public array $inputs,
-        public string $kind,                              // 'standard' | 'maintenance'
+        public string $effectClass,
+        public array $effectConfig,
+        public array $inputs,
+        public string $kind,
     ) {}
 }
 
@@ -494,7 +538,20 @@ class AususError extends \RuntimeException {}
 
 class UnknownAction extends AususError {}
 class PolicySubjectRequired extends AususError {}
+/**
+ * @internal Reserved exception class — not raised by any v0.1.x runtime path.
+ *           Declared so future Invoker code paths (notably the policy
+ *           bootstrap when actor resolution becomes pluggable) can raise it
+ *           without a wire/taxonomy break. Do not catch it in v0.1.x consumer
+ *           code — there is nothing to catch.
+ */
 class ActorRequired extends AususError {}
+/**
+ * @internal Reserved exception class — not raised by any v0.1.x runtime path.
+ *           Declared so future PersistenceContext bootstraps can raise it
+ *           without a wire/taxonomy break. Do not catch in v0.1.x consumer
+ *           code.
+ */
 class TenantContextRequired extends AususError {}
 class TenantBoundaryViolation extends AususError {}
 class PolicyDenied extends AususError {}
@@ -516,4 +573,11 @@ class NotFound extends AususError {
     }
 }
 class AuditEmissionFailed extends AususError {}
+/**
+ * @internal Reserved exception class — not raised by any v0.1.x runtime path.
+ *           The v0.1.x WorkflowRuntime uses {@see WorkflowStateMismatch} for
+ *           guard failures. This class exists so a future guard-as-policy
+ *           split can introduce a distinct denial-by-guard signal without a
+ *           wire/taxonomy break. Do not catch in v0.1.x consumer code.
+ */
 class WorkflowGuardDenied extends AususError {}

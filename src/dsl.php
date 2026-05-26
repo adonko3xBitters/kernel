@@ -74,13 +74,33 @@ final class Dsl
         return $builder;
     }
 
-    // Internal registration (called by builders during finalize):
+    // Internal registration (called by builders during finalize).
+    //
+    // These methods are `public` only because PHP cannot model
+    // package-private visibility — they are an internal seam between
+    // {@see EntityBuilder::finalize()} and the surrounding {@see Dsl}
+    // instance. Consumers MUST NOT call them. The framework gives no
+    // backward-compatibility guarantee on their signatures or existence
+    // outside that intra-package contract.
+    /** @internal */
     public function _registerEntity(EntityNode $e): void     { $this->entities[$e->fqn]    = $e; }
+    /** @internal */
     public function _registerAction(ActionNode $a): void     { $this->actions[$a->fqn]     = $a; }
+    /** @internal */
     public function _registerPolicy(PolicyNode $p): void     { if (!isset($this->policies[$p->fqn])) $this->policies[$p->fqn] = $p; }
+    /** @internal */
     public function _registerWorkflow(WorkflowNode $w): void { $this->workflows[$w->fqn]   = $w; }
+    /** @internal */
     public function _registerProjection(ProjectionNode $p): void { $this->projections[$p->fqn] = $p; }
 
+    /**
+     * Finalize every registered EntityBuilder and return the descriptor
+     * array consumed by the Compiler.
+     *
+     * @internal Called from {@see DslPlugin::describe()}. Consumers MUST
+     *           NOT call this method directly; they call `describe()`,
+     *           which is the public Plugin contract.
+     */
     public function emit(): array
     {
         // Finalize all builders (idempotent)
@@ -247,6 +267,15 @@ final class ActionBuilder
     public function requireRole(string $role): self  { $this->requiredRole = $role; return $this; }
 
     /**
+     * Compile this ActionBuilder into an {@see ActionNode} and its policy.
+     *
+     * @internal Called from {@see EntityBuilder::finalize()}. The signature
+     *           and parameter shape are an intra-package contract and may
+     *           change between minor releases. Consumers should never call
+     *           it directly — the public action surface is the
+     *           {@see Action} facade (`Action::create()`,
+     *           `Action::transition()`, `Action::update()`).
+     *
      * @param array<int,FieldNode> $entityFields all entity fields (system + user)
      * @param ?string $createStateField workflow state field a `create` effect seeds,
      *                                  resolved by {@see EntityBuilder} — null when the
@@ -435,6 +464,17 @@ final class EntityBuilder
         return $this;
     }
 
+    /**
+     * Resolve and register every node this EntityBuilder accumulated.
+     *
+     * @internal Called from {@see Dsl::emit()}. Consumers MUST NOT call
+     *           it directly — the public surface is the fluent builder
+     *           chain that ends with the implicit finalize on
+     *           {@see DslPlugin::describe()}. The method is idempotent
+     *           (a second call is a no-op) but its execution order
+     *           inside the Dsl emit cycle is part of the kernel's
+     *           private contract.
+     */
     public function finalize(): void
     {
         if ($this->finalized) return;
