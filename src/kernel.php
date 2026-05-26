@@ -536,8 +536,8 @@ final readonly class InvocationResult
 
 class AususError extends \RuntimeException {}
 
-class UnknownAction extends AususError {}
-class PolicySubjectRequired extends AususError {}
+class UnknownAction extends AususError implements Errors\NotFoundError {}
+class PolicySubjectRequired extends AususError implements Errors\BadRequestError {}
 /**
  * @internal Reserved exception class — not raised by any v0.1.x runtime path.
  *           Declared so future Invoker code paths (notably the policy
@@ -545,34 +545,34 @@ class PolicySubjectRequired extends AususError {}
  *           without a wire/taxonomy break. Do not catch it in v0.1.x consumer
  *           code — there is nothing to catch.
  */
-class ActorRequired extends AususError {}
+class ActorRequired extends AususError implements Errors\BadRequestError {}
 /**
  * @internal Reserved exception class — not raised by any v0.1.x runtime path.
  *           Declared so future PersistenceContext bootstraps can raise it
  *           without a wire/taxonomy break. Do not catch in v0.1.x consumer
  *           code.
  */
-class TenantContextRequired extends AususError {}
-class TenantBoundaryViolation extends AususError {}
-class PolicyDenied extends AususError {}
-class WorkflowStateMismatch extends AususError {}
-class WorkflowSubjectNotFound extends AususError {}
-class EffectFailed extends AususError {
+class TenantContextRequired extends AususError implements Errors\BadRequestError {}
+class TenantBoundaryViolation extends AususError implements Errors\ForbiddenError {}
+class PolicyDenied extends AususError implements Errors\ForbiddenError {}
+class WorkflowStateMismatch extends AususError implements Errors\ConflictError {}
+class WorkflowSubjectNotFound extends AususError implements Errors\NotFoundError {}
+class EffectFailed extends AususError implements Errors\InternalError {
     public function __construct(string $actionFqn, public readonly \Throwable $causeError) {
         parent::__construct("EffectFailed: {$actionFqn}: " . $causeError->getMessage(), 0, $causeError);
     }
 }
-class ConcurrencyConflict extends AususError {
+class ConcurrencyConflict extends AususError implements Errors\ConflictError {
     public function __construct(public readonly Reference $ref, public readonly string $expected, public readonly string $actual) {
         parent::__construct("ConcurrencyConflict: {$ref->entityFqn}/{$ref->identityHandle} expected={$expected} actual={$actual}");
     }
 }
-class NotFound extends AususError {
+class NotFound extends AususError implements Errors\NotFoundError {
     public function __construct(public readonly Reference $ref) {
         parent::__construct("NotFound: {$ref->entityFqn}/{$ref->identityHandle} in tenant {$ref->tenantId}");
     }
 }
-class AuditEmissionFailed extends AususError {}
+class AuditEmissionFailed extends AususError implements Errors\InternalError {}
 /**
  * @internal Reserved exception class — not raised by any v0.1.x runtime path.
  *           The v0.1.x WorkflowRuntime uses {@see WorkflowStateMismatch} for
@@ -580,4 +580,4 @@ class AuditEmissionFailed extends AususError {}
  *           split can introduce a distinct denial-by-guard signal without a
  *           wire/taxonomy break. Do not catch in v0.1.x consumer code.
  */
-class WorkflowGuardDenied extends AususError {}
+class WorkflowGuardDenied extends AususError implements Errors\ForbiddenError {}
