@@ -1,7 +1,6 @@
 {
     "name": "ausus/kernel",
     "type": "library",
-    "version": "0.1.1",
     "description": "AUSUS Kernel — contracts, value objects, DSL facade. RFC-001 + contract surfaces of RFC-005 §2, RFC-013 §2, RFC-014 §2.",
     "license": "MIT",
     "keywords": ["ausus", "framework", "metadata", "kernel"],
