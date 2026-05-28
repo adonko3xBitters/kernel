@@ -3,6 +3,15 @@
 All notable changes documented per [Keep a Changelog](https://keepachangelog.com/).
 Versioning follows [SemVer](https://semver.org/).
 
+## [Unreleased] — v0.2.0-beta.1 prep
+
+### Added
+- New `Ausus\PagedRepository` interface (SPI). Extends `Repository` with
+  `findPaged(int $limit, int $offset): array{items, totalCount}` for native
+  driver-level pagination pushdown. `findPaged` ordering is stable and
+  `offset >= totalCount` returns empty rather than throwing. Backwards
+  compatible — `Repository` itself is unchanged; adapters opt in.
+
 ## [0.2.0-alpha.5] — 2026-05-28
 
 ### Changed

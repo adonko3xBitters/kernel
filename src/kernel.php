@@ -190,6 +190,30 @@ interface Repository {
     public function findAll(): array;
 }
 
+/**
+ * SPI for repositories that natively support pagination. Implementations that
+ * realise this interface get LIMIT/OFFSET pushdown at the driver level; the
+ * default `Repository` contract remains a complete fallback for adapters that
+ * only know how to return every row.
+ *
+ * @phpstan-type PagedResult array{items: list<Entity>, totalCount: int}
+ */
+interface PagedRepository extends Repository {
+    /**
+     * Return a deterministic page of entities for the active tenant ordered by
+     * id, together with the total row count BEFORE the limit/offset window.
+     *
+     * Contract:
+     *   - `$limit >= 1` and `$offset >= 0` — implementations may assume the
+     *     caller has already validated/clamped these values.
+     *   - Ordering is stable across calls (same limit/offset → same items).
+     *   - `offset >= totalCount` returns an empty items list, NOT an error.
+     *
+     * @return array{items: list<Entity>, totalCount: int}
+     */
+    public function findPaged(int $limit, int $offset): array;
+}
+
 final readonly class Entity {
     public function __construct(
         public Reference $reference,
