@@ -200,18 +200,131 @@ interface Repository {
  */
 interface PagedRepository extends Repository {
     /**
-     * Return a deterministic page of entities for the active tenant ordered by
-     * id, together with the total row count BEFORE the limit/offset window.
+     * Return a deterministic page of entities for the active tenant, optionally
+     * narrowed by `$filters` and ordered by `$sort`, together with the total
+     * row count BEFORE the limit/offset window but AFTER any filters.
      *
      * Contract:
      *   - `$limit >= 1` and `$offset >= 0` — implementations may assume the
      *     caller has already validated/clamped these values.
-     *   - Ordering is stable across calls (same limit/offset → same items).
+     *   - Filters and sort entries are pre-validated by the caller against
+     *     the declared field whitelist; implementations must STILL refuse
+     *     unknown columns as a defensive defence-in-depth check.
+     *   - Ordering is stable across calls (same query → same items). A trailing
+     *     `id ASC` is appended by the adapter when `$sort` does not already
+     *     pin a deterministic key.
      *   - `offset >= totalCount` returns an empty items list, NOT an error.
      *
+     * @param list<Filter> $filters
+     * @param list<Sort>   $sort
      * @return array{items: list<Entity>, totalCount: int}
      */
-    public function findPaged(int $limit, int $offset): array;
+    public function findPaged(int $limit, int $offset, array $filters = [], array $sort = []): array;
+}
+
+/**
+ * Whitelisted filter primitive used by the projection / repository contract.
+ *
+ * Three operators (no boolean trees, no OR groups, no arbitrary fragments):
+ *
+ *   - `eq`        — exact match on a scalar value;
+ *   - `in`        — membership in a small list of scalars (max 100 entries);
+ *   - `contains`  — substring search (case-insensitive) on string fields.
+ *
+ * Field validity is enforced by the caller against the projection's declared
+ * field list; the value object itself only checks operator legality and value
+ * shape so a malformed Filter cannot ever reach the SQL adapter.
+ */
+final readonly class Filter {
+    public const OP_EQ       = 'eq';
+    public const OP_IN       = 'in';
+    public const OP_CONTAINS = 'contains';
+
+    public const OPS = [self::OP_EQ, self::OP_IN, self::OP_CONTAINS];
+
+    /** Maximum cardinality of an `in` list — beyond this, callers should narrow upstream. */
+    public const IN_MAX_VALUES = 100;
+
+    public function __construct(
+        public string $field,
+        public string $op,
+        public mixed  $value,
+    ) {
+        if ($field === '') {
+            throw new \InvalidArgumentException("Filter: field must not be empty");
+        }
+        if (!in_array($op, self::OPS, true)) {
+            throw new \InvalidArgumentException(
+                "Filter: unknown operator '{$op}' (allowed: " . implode(',', self::OPS) . ')'
+            );
+        }
+        match ($op) {
+            self::OP_EQ, self::OP_CONTAINS => $this->assertScalar(),
+            self::OP_IN                    => $this->assertScalarList(),
+        };
+    }
+
+    private function assertScalar(): void {
+        if (!is_scalar($this->value)) {
+            throw new \InvalidArgumentException(
+                "Filter[{$this->field} {$this->op}]: value must be scalar, got " . get_debug_type($this->value)
+            );
+        }
+    }
+
+    private function assertScalarList(): void {
+        if (!is_array($this->value)) {
+            throw new \InvalidArgumentException(
+                "Filter[{$this->field} in]: value must be an array, got " . get_debug_type($this->value)
+            );
+        }
+        if ($this->value === []) {
+            throw new \InvalidArgumentException(
+                "Filter[{$this->field} in]: value list must not be empty"
+            );
+        }
+        if (count($this->value) > self::IN_MAX_VALUES) {
+            throw new \InvalidArgumentException(
+                "Filter[{$this->field} in]: value list has " . count($this->value)
+                . " entries (max " . self::IN_MAX_VALUES . ")"
+            );
+        }
+        foreach ($this->value as $v) {
+            if (!is_scalar($v)) {
+                throw new \InvalidArgumentException(
+                    "Filter[{$this->field} in]: every list entry must be scalar"
+                );
+            }
+        }
+    }
+}
+
+/**
+ * Whitelisted sort primitive used by the projection / repository contract.
+ *
+ * Direction is `asc` or `desc`; the field is validated by the caller against
+ * the entity's declared columns. The value object refuses any other input so
+ * the SQL adapter can rely on the shape.
+ */
+final readonly class Sort {
+    public const DIR_ASC  = 'asc';
+    public const DIR_DESC = 'desc';
+
+    public const DIRS = [self::DIR_ASC, self::DIR_DESC];
+
+    public function __construct(
+        public string $field,
+        public string $direction,
+    ) {
+        if ($field === '') {
+            throw new \InvalidArgumentException("Sort: field must not be empty");
+        }
+        if (!in_array($direction, self::DIRS, true)) {
+            throw new \InvalidArgumentException(
+                "Sort: invalid direction '{$direction}' (allowed: " . implode(',', self::DIRS) . ')'
+            );
+        }
+    }
 }
 
 final readonly class Entity {
