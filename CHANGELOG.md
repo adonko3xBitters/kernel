@@ -3,6 +3,13 @@
 All notable changes documented per [Keep a Changelog](https://keepachangelog.com/).
 Versioning follows [SemVer](https://semver.org/).
 
+## [0.2.0-alpha.5] — 2026-05-28
+
+### Changed
+- No runtime changes in v0.2.0-alpha.5.
+- Release metadata and documentation were aligned with the public alpha
+  installation flow.
+
 ## [0.2.0-alpha.4] — 2026-05-27
 
 ### Release engineering
