@@ -3,6 +3,31 @@
 All notable changes documented per [Keep a Changelog](https://keepachangelog.com/).
 Versioning follows [SemVer](https://semver.org/).
 
+## [0.2.0-alpha.4] — 2026-05-27
+
+### Release engineering
+- **No runtime, API, or wire change.** This release is a coordinated
+  DX/release-engineering hotfix across the AUSUS package set. The kernel
+  itself ships zero code changes vs `v0.2.0-alpha.3`; the version bump
+  exists to keep all `ausus/*` packages tag-aligned per the documented
+  alignment policy.
+- **CI validation strictness.** `scripts/ci.sh` and the new
+  `scripts/release-gate.sh` (repo-level) now invoke
+  `composer validate --no-check-publish --no-check-lock --strict` against
+  the kernel manifest. The `--no-check-version` flag (removed in
+  Composer 2.x) is dropped. Warnings are now build failures, which is the
+  correct CI posture for a published package manifest.
+- **Subtree release hardening.** The kernel ships as part of the
+  coordinated `scripts/release-publish.sh` flow, which now enforces:
+  - HEAD on `main`, clean working tree, synced with `origin/main`
+  - All 10 `rel-*` remotes pre-checked for reachability
+  - Idempotent re-run via tag-collision detection + SHA verification
+  - Cleanup trap restoring the original branch
+  - No `git push --force` on tags (immutable contract)
+- **Tag protection ruleset** (HIGH-12) now blocks any `v*.*.*` tag push
+  that has not passed the `release-gate / gate` workflow. The kernel's
+  tag for `v0.2.0-alpha.4` was the first to land under this rule.
+
 ## [Unreleased] — v0.1.x stabilisation
 
 ### Documentation
