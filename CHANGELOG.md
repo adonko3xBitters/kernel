@@ -7,10 +7,19 @@ Versioning follows [SemVer](https://semver.org/).
 
 ### Added
 - New `Ausus\PagedRepository` interface (SPI). Extends `Repository` with
-  `findPaged(int $limit, int $offset): array{items, totalCount}` for native
-  driver-level pagination pushdown. `findPaged` ordering is stable and
-  `offset >= totalCount` returns empty rather than throwing. Backwards
-  compatible — `Repository` itself is unchanged; adapters opt in.
+  `findPaged(int $limit, int $offset, list<Filter>, list<Sort>): array{items,
+  totalCount}` for native driver-level pagination + filtering + sorting
+  pushdown. Ordering is stable (the adapter appends `id ASC` as the
+  deterministic tie-breaker when the caller's sort list does not pin id).
+  `offset >= totalCount` returns empty rather than throwing. Filter and
+  Sort parameters default to empty lists for back-compat.
+- New `Ausus\Filter` final readonly value object holding `{field, op, value}`
+  with `OP_EQ`, `OP_IN`, `OP_CONTAINS` constants. Constructor validates
+  field non-emptiness, operator membership, and value shape per operator
+  (scalar for eq/contains, non-empty scalar list ≤ 100 entries for in).
+  A malformed Filter cannot reach the SQL adapter.
+- New `Ausus\Sort` final readonly value object holding `{field, direction}`
+  with `DIR_ASC`, `DIR_DESC` constants. Same defensive validation.
 
 ## [0.2.0-alpha.5] — 2026-05-28
 
