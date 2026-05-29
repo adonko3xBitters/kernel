@@ -3,6 +3,13 @@
 All notable changes documented per [Keep a Changelog](https://keepachangelog.com/).
 Versioning follows [SemVer](https://semver.org/).
 
+## [1.0.1] — 2026-05-29
+
+### Changed
+- No runtime, API, or SPI change vs `1.0.0`. Patch release tagged in
+  step with the v1.0.1 hotfix line for `ausus/starter` — version
+  alignment only.
+
 ## [1.0.0] — 2026-05-29
 
 ### Released
