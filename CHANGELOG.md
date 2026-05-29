@@ -3,6 +3,22 @@
 All notable changes documented per [Keep a Changelog](https://keepachangelog.com/).
 Versioning follows [SemVer](https://semver.org/).
 
+## [1.0.0] — 2026-05-29
+
+### Released
+- First stable release. Bit-identical to `0.2.0-rc.1` runtime, API,
+  contracts, value objects, and SPI surface.
+- `Ausus\Filter`, `Ausus\Sort`, `Ausus\PagedRepository`, the five
+  `Ausus\Errors\*` typed marker interfaces, the `Plugin` / `DslPlugin`
+  / `Dsl` SPI, and every value object (`Tenant`, `Reference`,
+  `Version`, `Instant`, etc.) are now frozen as stable public API.
+
+### Changed
+- Package metadata: inter-package `require` constraints move from
+  the pre-release form `^0.2@alpha` to the stable form `^1.0`.
+  Consumers no longer need to declare a `minimum-stability` flag in
+  their root `composer.json`.
+
 ## [0.2.0-rc.1] — 2026-05-29
 
 ### Changed
